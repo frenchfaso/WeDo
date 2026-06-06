@@ -1,0 +1,24 @@
+services:
+  webapp:
+    build: .
+    env_file:
+      - path: ${WEDO_ENV_FILE:-./.env}
+        required: false
+    user: "${WEDO_UID:-1000}:${WEDO_GID:-1000}"
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      ENV: production
+      DATABASE_URL: sqlite:////app/data/wedo.db
+      WEDO_CORS_ORIGINS: ${WEDO_CORS_ORIGINS:-}
+      SEED_DEFAULT_USER: "false"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - ./data:/app/data
