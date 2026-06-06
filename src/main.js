@@ -197,6 +197,8 @@ function getLocalSetupErrorMessage(error) {
         || normalizedMessage.includes('migration')
         || normalizedMessage.includes('indexeddb')
         || normalizedMessage.includes('dexie')
+        || normalizedMessage.includes('rxerror')
+        || normalizedMessage.includes('database')
     ) {
         return 'Offline data could not be opened. Refresh the app to load the latest update.';
     }
@@ -756,6 +758,15 @@ document.addEventListener('alpine:init', () => {
                 return;
             }
 
+            try {
+                await this.openLocalState();
+            } catch {
+                await this.recoverLocalStateAfterSetupFailure();
+                await this.openLocalState();
+            }
+        },
+
+        async openLocalState() {
             const db = await getDatabase(this.user.id);
             const rawState = getRawState(this);
             rawState.db = db;
@@ -764,6 +775,18 @@ document.addEventListener('alpine:init', () => {
             this.bindCollectionQueries();
             this.startReplications();
             await this.waitForSync();
+        },
+
+        async recoverLocalStateAfterSetupFailure() {
+            await this.clearReplication();
+            this.clearQuerySubscriptions();
+            this.lists = [];
+            this.todos = [];
+            this.selectedList = null;
+            const rawState = getRawState(this);
+            rawState.collections = null;
+            rawState.db = null;
+            await disposeDatabase({ remove: true });
         },
 
         setupInvalidationStream() {
@@ -917,8 +940,8 @@ document.addEventListener('alpine:init', () => {
             this.syncError = '';
             this.setupInvalidationStream();
             this.replications = [
-                this.createReplication('lists', collections.lists),
-                this.createReplication('todos', collections.todos)
+                markRaw(this.createReplication('lists', collections.lists)),
+                markRaw(this.createReplication('todos', collections.todos))
             ];
 
             this.replications.forEach((replication) => {
