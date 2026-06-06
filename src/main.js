@@ -65,14 +65,14 @@ function getDatabaseName(userId) {
     return `${DATABASE_NAME_PREFIX}_${String(userId).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 }
 
-async function disposeDatabase({ remove = false } = {}) {
+async function disposeDatabase({ remove = false, databaseName = null } = {}) {
     const existingDatabasePromise = dbPromise;
-    const databaseName = currentDatabaseName;
+    const databaseNameToRemove = databaseName || currentDatabaseName;
 
     dbPromise = null;
     currentDatabaseName = null;
 
-    if (!existingDatabasePromise && !(remove && databaseName)) {
+    if (!existingDatabasePromise && !(remove && databaseNameToRemove)) {
         return;
     }
 
@@ -90,9 +90,9 @@ async function disposeDatabase({ remove = false } = {}) {
         // ignore cleanup failures
     }
 
-    if (remove && databaseName) {
+    if (remove && databaseNameToRemove) {
         try {
-            await removeRxDatabase(databaseName, rxStorage);
+            await removeRxDatabase(databaseNameToRemove, rxStorage);
         } catch {
             // ignore cleanup failures
         }
@@ -778,6 +778,7 @@ document.addEventListener('alpine:init', () => {
         },
 
         async recoverLocalStateAfterSetupFailure() {
+            const databaseName = this.user ? getDatabaseName(this.user.id) : null;
             await this.clearReplication();
             this.clearQuerySubscriptions();
             this.lists = [];
@@ -786,7 +787,7 @@ document.addEventListener('alpine:init', () => {
             const rawState = getRawState(this);
             rawState.collections = null;
             rawState.db = null;
-            await disposeDatabase({ remove: true });
+            await disposeDatabase({ remove: true, databaseName });
         },
 
         setupInvalidationStream() {
