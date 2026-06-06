@@ -5,10 +5,10 @@ services:
       dockerfile: Dockerfile.dev
     environment:
       ENV: development
-      DATABASE_URL: sqlite:////app/data/wedo-dev.db
+      DATABASE_URL: ${WEDO_DEV_DATABASE_URL:-sqlite:////app/data/wedo-dev.db}
       WEDO_AGENT_API_SECRET: dev-agent-secret
       WEDO_ADMIN_AGENT_API_SECRET: dev-admin-agent-secret
-      WEDO_CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080
+      WEDO_CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://frontend:5173,http://localhost:8080,http://127.0.0.1:8080
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -28,5 +28,24 @@ services:
     depends_on:
       - backend
 
+  e2e:
+    image: mcr.microsoft.com/playwright:v1.60.0-noble
+    profiles:
+      - e2e
+    working_dir: /app
+    environment:
+      CI: "1"
+      PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+      VITE_API_PROXY_TARGET: http://backend:8080
+      WEDO_AGENT_API_SECRET: dev-agent-secret
+      WEDO_ADMIN_AGENT_API_SECRET: dev-admin-agent-secret
+    volumes:
+      - .:/app
+      - e2e_node_modules:/app/node_modules
+    command: sh -c "npm ci || exit 1; npm run dev -- --host 127.0.0.1 --port 5173 & npm run test:e2e"
+    depends_on:
+      - backend
+
 volumes:
   node_modules:
+  e2e_node_modules:

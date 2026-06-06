@@ -9,6 +9,8 @@ __pycache__/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+playwright-report/
+test-results/
 
 venv/
 .venv/

@@ -1,5 +1,6 @@
 
 import Alpine from '@alpinejs/csp';
+import { markRaw } from '@vue/reactivity';
 import { addRxPlugin, createRxDatabase, removeRxDatabase } from 'rxdb';
 import { RxDBMigrationSchemaPlugin } from 'rxdb/plugins/migration-schema';
 import { replicateRxCollection } from 'rxdb/plugins/replication';
@@ -52,6 +53,7 @@ const ROOT_PATH = '/';
 const LIST_ROUTE_PATTERN = /^\/lists\/([^/]+)$/;
 const SYNC_WAIT_TIMEOUT_MS = 8000;
 const SERVICE_WORKER_UPDATE_INTERVAL_MS = 60 * 60 * 1000;
+const RESYNC_FALLBACK_INTERVAL_MS = 30 * 1000;
 const DATABASE_NAME_PREFIX = 'wedo';
 const APP_VERSION = __APP_VERSION__;
 const rxStorage = getRxStorageDexie();
@@ -202,6 +204,21 @@ function getLocalSetupErrorMessage(error) {
     return 'Signed in, but app setup could not finish on this device. Refresh and try again.';
 }
 
+function getRawState(component) {
+    return Alpine.raw(component);
+}
+
+function getRawCollections(component) {
+    return getRawState(component).collections;
+}
+
+function markRxDatabaseRaw(db) {
+    markRaw(db);
+    markRaw(db.collections);
+    Object.values(db.collections).forEach((collection) => markRaw(collection));
+    return db;
+}
+
 async function getDatabase(userId) {
     const databaseName = getDatabaseName(userId);
 
@@ -219,7 +236,7 @@ async function getDatabase(userId) {
             name: databaseName,
             storage: rxStorage,
             multiInstance: false,
-            ignoreDuplicate: true
+            closeDuplicates: true
         }).then(async (db) => {
             await db.addCollections({
                 lists: {
@@ -241,7 +258,7 @@ async function getDatabase(userId) {
                 },
                 todos: { schema: TODO_SCHEMA }
             });
-            return db;
+            return markRxDatabaseRaw(db);
         }).catch((error) => {
             dbPromise = null;
             currentDatabaseName = null;
@@ -303,6 +320,7 @@ document.addEventListener('alpine:init', () => {
         onlineListener: null,
         visibilitySyncListener: null,
         focusSyncListener: null,
+        resyncFallbackIntervalId: null,
         popstateListener: null,
 
         get isAuthenticated() {
@@ -738,8 +756,10 @@ document.addEventListener('alpine:init', () => {
                 return;
             }
 
-            this.db = await getDatabase(this.user.id);
-            this.collections = this.db.collections;
+            const db = await getDatabase(this.user.id);
+            const rawState = getRawState(this);
+            rawState.db = db;
+            rawState.collections = db.collections;
             await this.clearReplication();
             this.bindCollectionQueries();
             this.startReplications();
@@ -749,9 +769,9 @@ document.addEventListener('alpine:init', () => {
         setupInvalidationStream() {
             this.teardownInvalidationStream();
             this.teardownResyncFallback();
+            this.setupResyncFallback();
 
             if (typeof EventSource === 'undefined') {
-                this.setupResyncFallback();
                 return;
             }
 
@@ -770,6 +790,10 @@ document.addEventListener('alpine:init', () => {
                     // ignore malformed invalidation events
                 }
             };
+
+            this.invalidationEventSource.onerror = () => {
+                this.triggerResync();
+            };
         },
 
         teardownInvalidationStream() {
@@ -787,17 +811,27 @@ document.addEventListener('alpine:init', () => {
         setupResyncFallback() {
             this.teardownResyncFallback();
 
-            this.visibilitySyncListener = () => {
-                if (document.visibilityState === 'visible') {
-                    this.replications.forEach((replication) => replication.reSync());
+            const syncIfVisible = () => {
+                if (document.visibilityState !== 'visible' || !navigator.onLine) {
+                    return;
                 }
+                this.triggerResync();
+            };
+
+            this.visibilitySyncListener = () => {
+                syncIfVisible();
             };
             this.focusSyncListener = () => {
-                this.replications.forEach((replication) => replication.reSync());
+                syncIfVisible();
             };
+            this.resyncFallbackIntervalId = window.setInterval(syncIfVisible, RESYNC_FALLBACK_INTERVAL_MS);
 
             document.addEventListener('visibilitychange', this.visibilitySyncListener);
             window.addEventListener('focus', this.focusSyncListener);
+        },
+
+        triggerResync() {
+            this.replications.forEach((replication) => replication.reSync());
         },
 
         teardownResyncFallback() {
@@ -810,16 +844,22 @@ document.addEventListener('alpine:init', () => {
                 window.removeEventListener('focus', this.focusSyncListener);
                 this.focusSyncListener = null;
             }
+
+            if (this.resyncFallbackIntervalId) {
+                window.clearInterval(this.resyncFallbackIntervalId);
+                this.resyncFallbackIntervalId = null;
+            }
         },
 
         bindCollectionQueries() {
             this.clearQuerySubscriptions();
+            const collections = getRawCollections(this);
 
-            if (!this.collections || !this.user || this.passwordSetupRequired) {
+            if (!collections || !this.user || this.passwordSetupRequired) {
                 return;
             }
 
-            const listSubscription = this.collections.lists
+            const listSubscription = collections.lists
                 .find({
                     selector: {
                         _deleted: false
@@ -848,7 +888,7 @@ document.addEventListener('alpine:init', () => {
                 return;
             }
 
-            const todoSubscription = this.collections.todos
+            const todoSubscription = collections.todos
                 .find({
                     selector: {
                         list_id: this.selectedListId,
@@ -868,15 +908,17 @@ document.addEventListener('alpine:init', () => {
         },
 
         startReplications() {
-            if (!this.collections || this.passwordSetupRequired) {
+            const collections = getRawCollections(this);
+
+            if (!collections || this.passwordSetupRequired) {
                 return;
             }
 
             this.syncError = '';
             this.setupInvalidationStream();
             this.replications = [
-                this.createReplication('lists', this.collections.lists),
-                this.createReplication('todos', this.collections.todos)
+                this.createReplication('lists', collections.lists),
+                this.createReplication('todos', collections.todos)
             ];
 
             this.replications.forEach((replication) => {
@@ -969,22 +1011,25 @@ document.addEventListener('alpine:init', () => {
         },
 
         async getListDocument(listId) {
-            if (!this.collections) {
+            const collections = getRawCollections(this);
+            if (!collections) {
                 return null;
             }
-            return await this.collections.lists.findOne(listId).exec();
+            return await collections.lists.findOne(listId).exec();
         },
 
         async getTodoDocument(todoId) {
-            if (!this.collections) {
+            const collections = getRawCollections(this);
+            if (!collections) {
                 return null;
             }
-            return await this.collections.todos.findOne(todoId).exec();
+            return await collections.todos.findOne(todoId).exec();
         },
 
         async createList() {
             const name = this.newListName.trim();
-            if (!name || !this.collections || !this.user || this.passwordSetupRequired) {
+            const collections = getRawCollections(this);
+            if (!name || !collections || !this.user || this.passwordSetupRequired) {
                 return;
             }
 
@@ -993,7 +1038,7 @@ document.addEventListener('alpine:init', () => {
             const listId = createId('list');
 
             try {
-                await this.collections.lists.insert({
+                await collections.lists.insert({
                     id: listId,
                     owner_id: this.user.id,
                     name,
@@ -1071,7 +1116,8 @@ document.addEventListener('alpine:init', () => {
 
         async createTodo() {
             const title = this.newTodoTitle.trim();
-            if (!title || !this.collections || !this.selectedListId || this.passwordSetupRequired) {
+            const collections = getRawCollections(this);
+            if (!title || !collections || !this.selectedListId || this.passwordSetupRequired) {
                 return;
             }
 
@@ -1079,7 +1125,7 @@ document.addEventListener('alpine:init', () => {
             const timestamp = nowIso();
 
             try {
-                await this.collections.todos.insert({
+                await collections.todos.insert({
                     id: createId('todo'),
                     list_id: this.selectedListId,
                     title,
@@ -1258,8 +1304,9 @@ document.addEventListener('alpine:init', () => {
             this.cancelTodoEdit();
             await this.clearReplication();
             this.clearQuerySubscriptions();
-            this.collections = null;
-            this.db = null;
+            const rawState = getRawState(this);
+            rawState.collections = null;
+            rawState.db = null;
 
             if (this.onlineListener) {
                 window.removeEventListener('online', this.onlineListener);

@@ -25,6 +25,12 @@ Run backend tests:
 ./test.sh
 ```
 
+Run browser tests:
+
+```bash
+./test-e2e.sh
+```
+
 ## Deploy
 
 ```bash

@@ -36,6 +36,7 @@ docker compose -f docker-compose.dev.yml up --build
 ## Daily Commands
 - Containerized dev app: `docker compose -f docker-compose.dev.yml up --build`
 - Backend tests in container: `./test.sh`
+- Frontend E2E tests in container: `./test-e2e.sh`
 - Frontend dev server, if running locally: `npm run dev`
 - Backend dev server, if running locally: `ENV=development uvicorn main:app --reload --port 8080`
 - Dockerized local run: `docker compose up -d --build`
@@ -48,10 +49,12 @@ docker compose -f docker-compose.dev.yml up --build
 ./test.sh tests/test_main.py
 ./test.sh tests/test_main.py::test_healthz
 ./test.sh tests/test_main.py -k "sync and pull"
+./test-e2e.sh
 ```
 
 - Backend tests are pytest only.
-- There is no frontend unit/integration test runner configured.
+- Frontend browser coverage uses Playwright in the `e2e` Compose profile.
+- Playwright reports are generated under `playwright-report/` and `test-results/`, both ignored.
 - Prefer single-test or `-k` invocations while iterating on backend changes.
 - Do not run multiple pytest commands in parallel; tests share `data/test_wedo_test.db` and can interfere with each other.
 
@@ -67,6 +70,7 @@ docker compose -f docker-compose.dev.yml up --build
 - `./test.sh tests/test_main.py::test_healthz` succeeds.
 - `./test.sh tests/test_main.py::test_login_success_sets_hardened_cookie` succeeds.
 - `./test.sh` succeeds when run sequentially.
+- `./test-e2e.sh` succeeds when Docker can pull `mcr.microsoft.com/playwright:v1.60.0-noble`.
 - If you touch auth, test bootstrapping, or seeding, re-run the full suite sequentially.
 
 ## Backend Conventions
